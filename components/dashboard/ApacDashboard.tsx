@@ -133,6 +133,11 @@ export function ApacDashboard() {
     useState<GeocodedPipelineOpportunity | null>(null);
   const [loadingProduct, setLoadingProduct] = useState<ProductId | null>(null);
   const [geocodingProduct, setGeocodingProduct] = useState<ProductId | null>(null);
+  const [loadingTamProduct, setLoadingTamProduct] = useState<ProductId | null>(
+    null
+  );
+  const [geocodingTamProduct, setGeocodingTamProduct] =
+    useState<ProductId | null>(null);
   const [tamLoading, setTamLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -242,6 +247,41 @@ export function ApacDashboard() {
     }
   };
 
+  const handleTamUpload = async (file: File, product: ProductId) => {
+    try {
+      setLoadingTamProduct(product);
+      setGeocodingTamProduct(null);
+      setError(null);
+      setSelectedLocationKey(null);
+      setSelectedOpportunity(null);
+
+      const data = await parsePipelineCsvFile(file, product);
+
+      setGeocodingTamProduct(product);
+      const geocoded = await geocodeRecordsByLocation(
+        data,
+        MAPBOX_TOKEN,
+        (opportunity) => opportunity['Opportunity City'],
+        (opportunity) => opportunity['Opportunity Country']
+      );
+
+      setTamData((current) => [
+        ...current.filter((opportunity) => opportunity.product !== product),
+        ...geocoded,
+      ]);
+      setViewMode('tam');
+    } catch (loadError) {
+      setError(
+        loadError instanceof Error
+          ? loadError.message
+          : 'Unable to parse TAM whitespace CSV'
+      );
+    } finally {
+      setLoadingTamProduct(null);
+      setGeocodingTamProduct(null);
+    }
+  };
+
   const handleClearProduct = (product: ProductId) => {
     setOpportunitiesByProduct((current) => ({ ...current, [product]: [] }));
     setGeocodedByProduct((current) => ({ ...current, [product]: [] }));
@@ -285,18 +325,6 @@ export function ApacDashboard() {
   const owners = useMemo(
     () =>
       sortText(Array.from(new Set(activeOpportunities.map((item) => item.Owner)))),
-    [activeOpportunities]
-  );
-
-  const countries = useMemo(
-    () =>
-      sortText(
-        Array.from(
-          new Set(
-            activeOpportunities.map((item) => item['Opportunity Country'])
-          )
-        )
-      ),
     [activeOpportunities]
   );
 
@@ -368,6 +396,19 @@ export function ApacDashboard() {
         activeProductSet.has(opportunity.product)
       ),
     [activeProductSet, capturedTamData]
+  );
+
+  const countries = useMemo(
+    () =>
+      sortText(
+        Array.from(
+          new Set([
+            ...activeOpportunities.map((item) => item['Opportunity Country']),
+            ...activeTamData.map((item) => item['Opportunity Country']),
+          ])
+        )
+      ),
+    [activeOpportunities, activeTamData]
   );
 
   const selectedCity = useMemo(
@@ -530,11 +571,14 @@ export function ApacDashboard() {
               uploadProduct={uploadProduct}
               onUploadProductChange={setUploadProduct}
               onFileUpload={handlePipelineUpload}
+              onTamUpload={handleTamUpload}
               onClearProduct={handleClearProduct}
               onClearAll={handleClearAll}
               onPresentationMode={() => setIsPresentationMode(true)}
               loadingProduct={loadingProduct}
               geocodingProduct={geocodingProduct}
+              loadingTamProduct={loadingTamProduct}
+              geocodingTamProduct={geocodingTamProduct}
             />
 
             <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
@@ -626,11 +670,14 @@ interface SidebarHeaderProps {
   uploadProduct: ProductId;
   onUploadProductChange: (product: ProductId) => void;
   onFileUpload: (file: File, product: ProductId) => void;
+  onTamUpload: (file: File, product: ProductId) => void;
   onClearProduct: (product: ProductId) => void;
   onClearAll: () => void;
   onPresentationMode: () => void;
   loadingProduct: ProductId | null;
   geocodingProduct: ProductId | null;
+  loadingTamProduct: ProductId | null;
+  geocodingTamProduct: ProductId | null;
 }
 
 function SidebarHeader({
@@ -638,15 +685,21 @@ function SidebarHeader({
   uploadProduct,
   onUploadProductChange,
   onFileUpload,
+  onTamUpload,
   onClearProduct,
   onClearAll,
   onPresentationMode,
   loadingProduct,
   geocodingProduct,
+  loadingTamProduct,
+  geocodingTamProduct,
 }: SidebarHeaderProps) {
   const activeProduct = PRODUCT_CONFIG_BY_ID[uploadProduct];
   const isLoading = loadingProduct === uploadProduct;
   const isGeocoding = geocodingProduct === uploadProduct;
+  const isTamLoading = loadingTamProduct === uploadProduct;
+  const isTamGeocoding = geocodingTamProduct === uploadProduct;
+  const isAnyUploadLoading = Boolean(loadingProduct || loadingTamProduct);
 
   return (
     <div className="border-b border-bny-astronaut px-6 py-6">
@@ -710,7 +763,20 @@ function SidebarHeader({
                 : `Upload ${activeProduct.shortLabel}`
             }
             onFileUpload={onFileUpload}
-            disabled={Boolean(loadingProduct)}
+            disabled={isAnyUploadLoading}
+          />
+          <UploadButton
+            product={uploadProduct}
+            label={
+              isTamLoading
+                ? isTamGeocoding
+                  ? 'Geocoding TAM...'
+                  : 'Parsing TAM...'
+                : `Upload ${activeProduct.shortLabel} TAM`
+            }
+            onFileUpload={onTamUpload}
+            disabled={isAnyUploadLoading}
+            variant="secondary"
           />
           {hasData && (
             <>
@@ -747,6 +813,7 @@ interface UploadButtonProps {
   label: string;
   onFileUpload: (file: File, product: ProductId) => void;
   disabled?: boolean;
+  variant?: 'primary' | 'secondary';
 }
 
 function UploadButton({
@@ -754,10 +821,15 @@ function UploadButton({
   label,
   onFileUpload,
   disabled = false,
+  variant = 'primary',
 }: UploadButtonProps) {
   return (
     <label
-      className={`inline-flex items-center justify-center gap-2 rounded-full bg-bny-primary px-4 py-2 text-xs font-semibold text-white shadow-lg shadow-black/20 transition hover:bg-bny-teal ${
+      className={`inline-flex items-center justify-center gap-2 rounded-full px-4 py-2 text-xs font-semibold shadow-lg shadow-black/20 transition ${
+        variant === 'primary'
+          ? 'bg-bny-primary text-white hover:bg-bny-teal'
+          : 'border border-bny-primary/35 bg-bny-navy/55 text-bny-teal hover:bg-bny-primary/15 hover:text-white'
+      } ${
         disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'
       }`}
     >
